@@ -1,0 +1,136 @@
+#!/bin/bash
+#
+# ############################################################################
+# Copyright 2019 Julien Girard
+#
+#    Licensed under the GNU GENERAL PUBLIC LICENSE, Version 3 ;
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#      http://http://www.gnu.org/licenses/gpl-3.0.html
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#
+# ############################################################################
+# This script allow you to manage encrypted scripts using gpg.
+# Inspired by pass behaviour: https://www.passwordstore.org/
+
+set -euo pipefail
+
+# Default scripts directory
+SCRIPTS_DIR="${HOME}/.gsct"
+
+# GPG defaults options
+GPG_OPTS=( "--quiet" "--yes" "--compress-algo=none" "--no-encrypt-to" "--batch" "--use-agent" )
+# Use v2 of GPG
+GPG="gpg2"
+
+function usage() {
+	cat << EOF >&2
+Usage gsct [command] [arguments]
+
+	Run :
+	Usage gsct run [script] [script arguments]
+	If gsct is run from a symlink, it will try to run the the script matching the link name.
+
+	Edit :
+	Usage gsct edit [script]
+
+	Remove :
+	Usage gsct remove [script]
+EOF
+}
+
+function failed() {
+	echo "${@}" >&2
+	exit 1
+}
+
+# This function setup a secure temporary directory
+# in a shared memory filesystem that is erased
+# when script end.
+function tmp_dir() {
+	if [[ -d /dev/shm && -w /dev/shm && -x /dev/shm ]]; then
+    	SECURE_TMP_DIR="$(mktemp -d /dev/shm/gsct.XXXXXXXXXX)"
+    	function rm_tmp_dir() {
+        	rm -rf "${SECURE_TMP_DIR}"
+    	}       
+    	trap rm_tmp_dir EXIT
+	else
+		failed "Your system doesn't appear to host a shared memory device. Aborting"
+	fi
+}
+
+function run_command() {
+	local script="${1}"
+	local script_path="${SCRIPTS_DIR}/${script}"
+
+	eval "$($GPG --decrypt "${GPG_OPTS[@]}" "${script_path}")"
+}
+
+function edit_command() {
+	local script="${1}"
+	local script_path="${SCRIPTS_DIR}/${script}"
+
+	tmp_dir # Populate var SECURE_TMP_DIR
+	local tmp_path
+	tmp_path="$(mktemp -u "${SECURE_TMP_DIR}/XXXXXX")"
+
+    # If script already exist we decrypt it and store it in tmp_path
+	if [ -f "${script_path}" ]; then
+		$GPG --decrypt --output "${tmp_path}" "${GPG_OPTS[@]}" "${script_path}" || exit 1
+	fi
+
+	# Edit tmp file
+	${EDITOR:-vi} "${tmp_path}"
+
+	# If tmp_path is still there we encrypt it back where it belong
+	if [ -f "${tmp_path}" ]; then
+		$GPG --encrypt --default-recipient-self --output "${script_path}" "${GPG_OPTS[@]}" "${tmp_path}"
+	fi
+}
+
+function remove_command() {
+	script="${1}"
+	script_path="${SCRIPTS_DIR}/${script}"
+
+	rm -f "${script_path}"
+}
+
+function exec_command() {
+	case "${1}" in
+		'run')
+			run_command "${@:2}"
+			;;
+		'edit')
+			edit_command "${@:2}"
+			;;
+		'remove')
+			remove_command "${@:2}"
+			;;
+		*)
+			usage
+			exit 1
+			;;
+	esac
+}
+
+# Create scripts directory if absent.
+if [ ! -d "${SCRIPTS_DIR}" ]; then
+	mkdir "${SCRIPTS_DIR}"
+fi
+
+# Get call name
+name=$(basename "${0}")
+
+if [ "${name}" == "gsct" ]; then
+	exec_command "$@"
+else
+	exec_command run "${name}" "$@"
+fi
+
+exit 0
