@@ -69,7 +69,10 @@ function run_command() {
 	local script="${1}"
 	local script_path="${SCRIPTS_DIR}/${script}"
 
-	eval "$($GPG --decrypt "${GPG_OPTS[@]}" "${script_path}")"
+	# Create a function containing the script
+	eval "function script() { $($GPG --decrypt "${GPG_OPTS[@]}" "${script_path}") ; }"
+	# Call the function with good arguments
+	script "${@:2}"
 }
 
 function edit_command() {
